@@ -25,6 +25,8 @@
 #include "testing/base.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 
 namespace
 {
@@ -41,6 +43,21 @@ protected:
     void TearDown() override {
         cleanup();
         print_rmw_errors();
+    }
+
+    // Waits on one service and one client (either may be null) and returns which of them are ready.
+    std::pair<bool, bool> wait_for(rmw_service_t* service, rmw_client_t* client, rmw_time_t timeout) {
+        void* services[1] = {service != nullptr ? service->data : nullptr};
+        void* clients[1] = {client != nullptr ? client->data : nullptr};
+        rmw_services_t rmw_services{service != nullptr ? 1U : 0U, services};
+        rmw_clients_t rmw_clients{client != nullptr ? 1U : 0U, clients};
+
+        auto* wait_set = rmw_create_wait_set(test_context(), 0);
+        EXPECT_NE(wait_set, nullptr);
+        auto result = rmw_wait(nullptr, nullptr, &rmw_services, &rmw_clients, nullptr, wait_set, &timeout);
+        EXPECT_TRUE(result == RMW_RET_OK || result == RMW_RET_TIMEOUT);
+        EXPECT_RMW_OK(rmw_destroy_wait_set(wait_set));
+        return {services[0] != nullptr, clients[0] != nullptr};
     }
 
     static BasicTypes::Request make_request(int32_t value) {
@@ -381,6 +398,70 @@ TEST_F(RmwRequestResponseTest, responding_to_an_unknown_request_fails) {
     auto response = make_response(1);
     EXPECT_EQ(rmw_send_response(service, &request_id, &response), RMW_RET_ERROR);
     rcutils_reset_error();
+}
+
+TEST_F(RmwRequestResponseTest, a_server_is_ready_while_a_request_waits) {
+    auto* service = create_service<BasicTypes>(create_test_topic());
+    auto* client = create_client<BasicTypes>(create_test_topic());
+    RMW_ASSERT_NE(service, nullptr);
+    RMW_ASSERT_NE(client, nullptr);
+
+    EXPECT_FALSE(wait_for(service, nullptr, rmw_time_t{0, 10'000'000}).first);
+
+    auto request = make_request(1);
+    int64_t sequence_id = 0;
+    ASSERT_RMW_OK(rmw_send_request(client, &request, &sequence_id));
+    EXPECT_TRUE(wait_for(service, nullptr, rmw_time_t{1, 0}).first);
+    EXPECT_TRUE(wait_for(service, nullptr, rmw_time_t{1, 0}).first);
+
+    rmw_service_info_t header{};
+    bool taken = false;
+    ASSERT_RMW_OK(rmw_take_request(service, &header, &request, &taken));
+    ASSERT_TRUE(taken);
+    EXPECT_FALSE(wait_for(service, nullptr, rmw_time_t{0, 10'000'000}).first);
+}
+
+TEST_F(RmwRequestResponseTest, a_client_is_ready_while_a_response_waits) {
+    auto* service = create_service<BasicTypes>(create_test_topic());
+    auto* client = create_client<BasicTypes>(create_test_topic());
+    RMW_ASSERT_NE(service, nullptr);
+    RMW_ASSERT_NE(client, nullptr);
+
+    auto request = make_request(1);
+    int64_t sequence_id = 0;
+    ASSERT_RMW_OK(rmw_send_request(client, &request, &sequence_id));
+    EXPECT_FALSE(wait_for(nullptr, client, rmw_time_t{0, 10'000'000}).second);
+
+    rmw_service_info_t header{};
+    bool taken = false;
+    ASSERT_RMW_OK(rmw_take_request(service, &header, &request, &taken));
+    ASSERT_TRUE(taken);
+    auto response = make_response(1);
+    ASSERT_RMW_OK(rmw_send_response(service, &header.request_id, &response));
+    EXPECT_TRUE(wait_for(nullptr, client, rmw_time_t{1, 0}).second);
+
+    ASSERT_RMW_OK(rmw_take_response(client, &header, &response, &taken));
+    ASSERT_TRUE(taken);
+    EXPECT_FALSE(wait_for(nullptr, client, rmw_time_t{0, 10'000'000}).second);
+}
+
+TEST_F(RmwRequestResponseTest, a_waiting_server_wakes_up_when_a_request_arrives) {
+    auto* service = create_service<BasicTypes>(create_test_topic());
+    auto* client = create_client<BasicTypes>(create_test_topic());
+    RMW_ASSERT_NE(service, nullptr);
+    RMW_ASSERT_NE(client, nullptr);
+
+    std::thread sender([client] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        auto request = make_request(1);
+        int64_t sequence_id = 0;
+        EXPECT_RMW_OK(rmw_send_request(client, &request, &sequence_id));
+    });
+
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_TRUE(wait_for(service, nullptr, rmw_time_t{10, 0}).first);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+    sender.join();
 }
 
 } // namespace

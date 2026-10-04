@@ -48,6 +48,12 @@ TEST_F(RmwServiceTest, two_servers_can_serve_the_same_service) {
     RMW_ASSERT_NE(create_service<BasicTypes>(create_test_topic()), nullptr);
 }
 
+TEST_F(RmwServiceTest, sixteen_servers_can_serve_the_same_service) {
+    for (int i = 0; i < 16; ++i) {
+        RMW_ASSERT_NE(create_service<BasicTypes>(create_test_topic()), nullptr) << "server " << i + 1;
+    }
+}
+
 TEST_F(RmwServiceTest, rejects_a_different_service_type_under_the_same_name) {
     RMW_ASSERT_NE(create_service<BasicTypes>(create_test_topic()), nullptr);
     EXPECT_EQ(create_service<Empty>(create_test_topic()), nullptr);

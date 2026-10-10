@@ -89,6 +89,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* rmw_node,
         }
         rmw_service->data = server_impl.value();
     }
+    rmw_node->context->impl->notify_graph_change();
 
     return rmw_service;
 }
@@ -115,6 +116,9 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* rmw_node, rmw_service_t* rmw_service) 
         deallocate(rmw_service->service_name);
     }
     rmw_service_free(rmw_service);
+    if (rmw_node->context->impl != nullptr) {
+        rmw_node->context->impl->notify_graph_change();
+    }
 
     return RMW_RET_OK;
 }

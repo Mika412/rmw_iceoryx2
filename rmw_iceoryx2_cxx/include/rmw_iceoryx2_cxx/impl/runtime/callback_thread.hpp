@@ -13,6 +13,7 @@
 #include "iox2/bb/expected.hpp"
 #include "iox2/bb/optional.hpp"
 #include "iox2/callback_progression.hpp"
+#include "iox2/file_descriptor.hpp"
 #include "rmw/event_callback_type.h"
 #include "rmw/visibility_control.h"
 #include "rmw_iceoryx2_cxx/impl/common/error.hpp"
@@ -20,6 +21,8 @@
 #include "rmw_iceoryx2_cxx/impl/runtime/guard_condition.hpp"
 
 #include <condition_variable>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -28,12 +31,13 @@
 namespace rmw::iox2
 {
 
-/// @brief Calls the new data callbacks of the entities of a context from one thread, started by the first callback
+/// @brief Calls the callbacks of the entities of a context from one thread, started by the first callback
 class RMW_PUBLIC CallbackThread
 {
 public:
     using ErrorType = CallbackThreadError;
     using Listener = Iceoryx2::InterProcess::Listener;
+    using CountEvents = std::function<uint64_t()>;
 
     CallbackThread() = default;
     CallbackThread(const CallbackThread&) = delete;
@@ -55,12 +59,32 @@ public:
     /// @param[in] listener The listener of the entity
     void remove_callback(Listener& listener);
 
+    /// @brief Calls the callback with the number of events count_events returns whenever the file descriptor is
+    ///        readable, first with those that already happened
+    /// @param[in] key Identifies the callback
+    /// @param[in] wake_up The file descriptor that is readable when events might have happened
+    /// @param[in] count_events Returns the number of events since its last call
+    /// @param[in] callback The callback, nullptr removes the callback of the key
+    /// @param[in] user_data Passed to the callback
+    /// @return Expected containing void if successful, error otherwise
+    auto set_callback(const void* key,
+                      ::iox2::FileDescriptorView wake_up,
+                      CountEvents count_events,
+                      rmw_event_callback_t callback,
+                      const void* user_data) -> ::iox2::bb::Expected<void, ErrorType>;
+
+    /// @brief Removes the callback of the key, it is neither running nor called after this returns
+    /// @param[in] key Identifies the callback
+    void remove_callback(const void* key);
+
 private:
     using Guard = Iceoryx2::WaitSet::Guard;
     using AttachmentId = Iceoryx2::WaitSet::AttachmentId;
 
     struct Callback
     {
+        ::iox2::FileDescriptorView wake_up;
+        CountEvents count_events;
         rmw_event_callback_t callback;
         const void* user_data;
         ::iox2::bb::Optional<Guard> guard;
@@ -71,8 +95,8 @@ private:
     void run();
     auto on_event(const AttachmentId& id) -> ::iox2::CallbackProgression;
     void attach_new_callbacks();
-    auto attach(Listener* listener, Callback& callback) -> bool;
-    static void call(Listener& listener, const Callback& callback);
+    auto attach(const void* key, Callback& callback) -> bool;
+    static void call(const Callback& callback);
 
     std::mutex m_mutex;
     std::condition_variable m_changes_applied;
@@ -82,8 +106,8 @@ private:
     ::iox2::bb::Optional<Iceoryx2::WaitSet::Handle> m_waitset;
     ::iox2::bb::Optional<Guard> m_wake_guard;
     ::iox2::bb::Optional<AttachmentId> m_wake_id;
-    std::map<Listener*, Callback> m_callbacks;
-    std::map<AttachmentId, Listener*> m_listeners;
+    std::map<const void*, Callback> m_callbacks;
+    std::map<AttachmentId, const void*> m_keys;
     std::vector<Guard> m_removed_guards;
     std::thread m_thread;
 };

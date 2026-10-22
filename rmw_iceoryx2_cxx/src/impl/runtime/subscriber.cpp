@@ -20,6 +20,7 @@
 #include "rmw_iceoryx2_cxx/impl/message/introspection.hpp"
 #include "rmw_iceoryx2_cxx/impl/middleware/iceoryx2.hpp"
 #include "rmw_iceoryx2_cxx/impl/runtime/payload_layout.hpp"
+#include "rmw_iceoryx2_cxx/impl/runtime/topic_qos.hpp"
 
 #include <algorithm>
 #include <set>
@@ -58,25 +59,30 @@ Subscriber::Subscriber(CreationLock,
     const auto& options = node.context().options();
     const uint64_t max_depth = options.max_depth_per_topic.value_or(DEFAULT_MAX_DEPTH_PER_TOPIC);
 
+    auto existing_qos = existing_topic_qos(node.iox2(), m_service_name);
+    if (!existing_qos.has_value()) {
+        error.emplace(ErrorType::SERVICE_CREATION_FAILURE);
+        return;
+    }
+
     // Adopt QoS settings from existing service in adoptive matching mode.
     // If the service does not exist, use QoS provided by caller.
-    if (options.qos_matching_mode == QosMatchingMode::ADOPTIVE) {
-        if (auto existing = node.iox2().lookup_service<Iceoryx2::ServiceType::Ipc>(
-                m_service_name, Iceoryx2::MessagingPattern::PublishSubscribe);
-            existing.has_value()) {
-            auto adopted_qos =
-                TryConvert<Qos>::from(existing.value().static_details.attributes(), ProfileKind::PUBLISH_SUBSCRIBE);
-            if (!adopted_qos.has_value()) {
-                RMW_IOX2_CHAIN_ERROR_MSG("failed to decode attributes of existing service for adoption");
-                error.emplace(ErrorType::SERVICE_CREATION_FAILURE);
-                return;
-            }
-            m_qos = std::move(adopted_qos.value());
-        }
+    auto service_qos = m_qos;
+    switch (options.qos_matching_mode) {
+    case QosMatchingMode::STRICT:
+        break;
+    case QosMatchingMode::ROS:
+        service_qos = existing_qos.value().value_or(m_qos);
+        break;
+    case QosMatchingMode::ADOPTIVE:
+        m_qos = existing_qos.value().value_or(m_qos);
+        service_qos = m_qos;
+        break;
     }
 
     // The type hash is stored alongside QoS so graph introspection can report it.
-    auto verifier = TryConvert<::iox2::AttributeVerifier>::from(m_qos, ::rmw::iox2::message_type_hash(m_typesupport));
+    auto verifier =
+        TryConvert<::iox2::AttributeVerifier>::from(service_qos, ::rmw::iox2::message_type_hash(m_typesupport));
     if (!verifier.has_value()) {
         RMW_IOX2_CHAIN_ERROR_MSG("failed to build service attribute verifier");
         error.emplace(ErrorType::SERVICE_CREATION_FAILURE);

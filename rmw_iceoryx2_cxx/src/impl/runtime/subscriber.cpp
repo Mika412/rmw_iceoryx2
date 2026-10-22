@@ -58,25 +58,31 @@ Subscriber::Subscriber(CreationLock,
     const auto& options = node.context().options();
     const uint64_t max_depth = options.max_depth_per_topic.value_or(DEFAULT_MAX_DEPTH_PER_TOPIC);
 
-    // Adopt QoS settings from existing service in adoptive matching mode.
+    // Except in strict matching mode, the QoS attributes of an existing service are required as they are.
+    // Adoptive matching mode also applies them to this endpoint.
     // If the service does not exist, use QoS provided by caller.
-    if (options.qos_matching_mode == QosMatchingMode::ADOPTIVE) {
+    auto service_qos = m_qos;
+    if (options.qos_matching_mode != QosMatchingMode::STRICT) {
         if (auto existing = node.iox2().lookup_service<Iceoryx2::ServiceType::Ipc>(
                 m_service_name, Iceoryx2::MessagingPattern::PublishSubscribe);
             existing.has_value()) {
-            auto adopted_qos =
+            auto existing_qos =
                 TryConvert<Qos>::from(existing.value().static_details.attributes(), ProfileKind::PUBLISH_SUBSCRIBE);
-            if (!adopted_qos.has_value()) {
-                RMW_IOX2_CHAIN_ERROR_MSG("failed to decode attributes of existing service for adoption");
+            if (!existing_qos.has_value()) {
+                RMW_IOX2_CHAIN_ERROR_MSG("failed to decode attributes of existing service");
                 error.emplace(ErrorType::SERVICE_CREATION_FAILURE);
                 return;
             }
-            m_qos = std::move(adopted_qos.value());
+            service_qos = std::move(existing_qos.value());
         }
+    }
+    if (options.qos_matching_mode == QosMatchingMode::ADOPTIVE) {
+        m_qos = service_qos;
     }
 
     // The type hash is stored alongside QoS so graph introspection can report it.
-    auto verifier = TryConvert<::iox2::AttributeVerifier>::from(m_qos, ::rmw::iox2::message_type_hash(m_typesupport));
+    auto verifier =
+        TryConvert<::iox2::AttributeVerifier>::from(service_qos, ::rmw::iox2::message_type_hash(m_typesupport));
     if (!verifier.has_value()) {
         RMW_IOX2_CHAIN_ERROR_MSG("failed to build service attribute verifier");
         error.emplace(ErrorType::SERVICE_CREATION_FAILURE);

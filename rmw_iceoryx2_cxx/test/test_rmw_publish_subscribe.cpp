@@ -1039,6 +1039,34 @@ TEST_F(RmwPublishSubscribeQosEnvTest, depth_above_the_maximum_is_capped) {
     EXPECT_EQ(received_count, 5);
 }
 
+TEST_F(RmwPublishSubscribeQosEnvTest, keep_all_subscription_buffers_the_maximum_depth) {
+    using rmw_iceoryx2_cxx_test_msgs::msg::Defaults;
+
+    setenv("RMW_IOX2_MAX_DEPTH_PER_TOPIC", "5", 1);
+    initialize_with_env();
+
+    auto topic = create_test_topic();
+    auto* publisher = create_default_publisher<Defaults>(topic);
+    ASSERT_NE(publisher, nullptr);
+    auto sub_profile = rmw_qos_profile_default;
+    sub_profile.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
+    auto* subscription = create_subscriber<Defaults>(topic, sub_profile);
+    ASSERT_NE(subscription, nullptr);
+
+    const Defaults message{};
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_RMW_OK(rmw_publish(publisher, &message, nullptr));
+    }
+    int received_count = 0;
+    bool taken{true};
+    while (taken) {
+        Defaults received{};
+        ASSERT_RMW_OK(rmw_take(subscription, &received, &taken, nullptr));
+        received_count += taken;
+    }
+    EXPECT_EQ(received_count, 5);
+}
+
 // ---------------------------------------------------------------------------
 // ROS matching
 // ---------------------------------------------------------------------------
